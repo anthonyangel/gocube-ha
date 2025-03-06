@@ -1,0 +1,21 @@
+{
+    "domain": "gocube",
+    "name": "GoCube",
+    "bluetooth": [
+        {
+            "local_name": "GoCube*"
+        }
+    ],
+    "codeowners": [],
+    "config_flow": true,
+    "dependencies": ["bluetooth_adapters"],
+    "documentation": "https://github.com/anthony/gocube",
+    "integration_type": "device",
+    "iot_class": "local_push",
+    "iot_standards": ["bluetooth_adapters"],
+    "loggers": ["bleak", "bleak_retry_connector"],
+    "requirements": ["bleak>=0.21.0", "bleak-retry-connector>=0.3.0"],
+    "platforms": ["binary_sensor", "sensor", "light"],
+    "version": "0.1.0",
+    "quality_scale": "bronze"
+}
