@@ -50,6 +50,17 @@ class GoCubeConnection:
         self._last_state_update = 0
         self._state_update_interval = 0.5  # seconds
         self._pending_state_update = False
+        self._should_auto_reconnect = True  # New property to control auto-reconnection
+
+    @property
+    def should_auto_reconnect(self) -> bool:
+        """Return whether the connection should auto-reconnect."""
+        return self._should_auto_reconnect
+
+    @should_auto_reconnect.setter
+    def should_auto_reconnect(self, value: bool) -> None:
+        """Set whether the connection should auto-reconnect."""
+        self._should_auto_reconnect = value
 
     @property
     def data(self) -> GoCubeData:
@@ -189,18 +200,41 @@ class GoCubeConnection:
                         raise
 
     def _handle_disconnect(self, client: BleakClient) -> None:
-        """Handle disconnection from the GoCube."""
-        _LOGGER.info("GoCube disconnected")
+        """Handle disconnection event."""
         self._is_connected = False
-        self._characteristic = None
-        # Notify callbacks of disconnection
-        for callback in self._state_callbacks:
-            callback()
+        self._notify_state_change()
+        
+        if self._should_auto_reconnect and self._device:
+            _LOGGER.debug("Device disconnected, scheduling reconnection")
+            asyncio.create_task(self._auto_reconnect())
+        else:
+            _LOGGER.debug("Device disconnected, auto-reconnect disabled")
+
+    async def _auto_reconnect(self) -> None:
+        """Attempt to reconnect to the device."""
+        if not self._should_auto_reconnect or not self._device:
+            return
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                if not self._should_auto_reconnect:
+                    _LOGGER.debug("Auto-reconnect cancelled")
+                    return
+                _LOGGER.debug("Attempting to reconnect (attempt %d/%d)", attempt + 1, MAX_RETRIES)
+                await self.connect(self._device)
+                return
+            except Exception as err:
+                _LOGGER.debug("Reconnection attempt failed: %s", err)
+
+        _LOGGER.warning("Failed to reconnect after %d attempts", MAX_RETRIES)
 
     async def disconnect(self) -> None:
-        """Disconnect from the GoCube."""
-        async with self._connection_lock:
-            await self._cleanup_connection()
+        """Disconnect from the device."""
+        self._should_auto_reconnect = False  # Disable auto-reconnect before disconnecting
+        if self._client:
+            await self._client.disconnect()
+        await self._cleanup_connection()
 
     async def enable_notifications(self) -> None:
         """Enable notifications from the GoCube."""
@@ -245,10 +279,12 @@ class GoCubeConnection:
     async def send_command(self, command_name: str) -> None:
         """Send a command to the GoCube."""
         if not self._is_connected or self._characteristic is None:
-            raise BleakError("Not connected to GoCube")
+            _LOGGER.debug("Cannot send command '%s': device is disconnected", command_name)
+            return  # Silently return instead of raising an error
 
-        if not self._client.is_connected:
-            raise BleakError("Connection lost")
+        if not self._client or not self._client.is_connected:
+            _LOGGER.debug("Cannot send command '%s': connection lost", command_name)
+            return  # Silently return instead of raising an error
 
         command_data = CONFIGURATION_COMMANDS.get(command_name)
         if command_data is None:
@@ -268,8 +304,8 @@ class GoCubeConnection:
             await self._client.write_gatt_char(self._characteristic, command_data)
             _LOGGER.debug("Sent command: %s", command_name)
         except Exception as err:
-            _LOGGER.error("Failed to send command %s: %s", command_name, err)
-            raise
+            _LOGGER.debug("Failed to send command %s: %s", command_name, err)  # Changed to debug level
+            # Don't raise the error, just log it
 
     async def _send_debounced_state_update(self) -> None:
         """Send a debounced GetState command."""
@@ -342,3 +378,15 @@ class GoCubeConnection:
     async def led_toggle(self) -> None:
         """Toggle backlight."""
         await self.send_command("LedToggle")
+
+    async def enable_auto_reconnect(self) -> None:
+        """Enable auto-reconnect feature."""
+        was_disabled = not self._should_auto_reconnect
+        self._should_auto_reconnect = True
+        
+        # If auto-reconnect was disabled and we're not connected, try to reconnect immediately
+        if was_disabled and not self._is_connected and self._device:
+            _LOGGER.debug("Auto-reconnect enabled, attempting immediate reconnection")
+            await self._auto_reconnect()
+        else:
+            _LOGGER.debug("Auto-reconnect enabled, device is already connected or no device info available")
