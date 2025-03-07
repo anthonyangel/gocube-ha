@@ -15,7 +15,7 @@ from .gocube_ble.ble import GoCubeConnection
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["binary_sensor", "sensor", "light", "button", "event"]
+PLATFORMS: list[str] = ["binary_sensor", "sensor", "light", "button", "event", "switch"]
 
 
 class GoCubeError(HomeAssistantError):
