@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/anthonyangel/gocube-ha/compare/v1.0.0...v1.1.0) (2025-03-31)
+
+
+### Features
+
+* more reliable connections ([fe771a5](https://github.com/anthonyangel/gocube-ha/commit/fe771a5aa2aa6e859134602959bd47004fc1a887))
+
 ## 1.0.0 (2025-03-31)
 
 
