@@ -1,0 +1,10 @@
+repository:
+  name: gocube-ha
+  description: Home Assistant integration for GoCube
+  has_issues: true
+  has_projects: false
+  has_wiki: false
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: false
+  delete_branch_on_merge: true
