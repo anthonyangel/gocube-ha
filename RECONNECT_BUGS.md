@@ -1,4 +1,4 @@
-# GoCube BLE Reconnect Bugs & Fix Plan
+# GoCube HA Integration — Bugs, Architecture & Feature Plan
 
 ## Reference Integrations
 
@@ -10,6 +10,8 @@ communication. It cannot use passive advertisement scanning like Oral-B. The Yal
 integration is the correct pattern to follow.
 
 ---
+
+# Part 1: Bugs
 
 ## Bug 1: Disconnect callback never registered (CRITICAL)
 
@@ -340,34 +342,397 @@ self.connection.should_auto_reconnect = False
 
 ---
 
-## Fix Plan: Implementation Order
+# Part 2: Architectural Changes
 
-### Phase 1: Critical connection fixes (Bugs 1, 2, 3, 7, 10, 12)
+## Adopt Yale BLE Lock Pattern
 
-Rewrite the connection lifecycle:
+The current architecture is "persistent connection with auto-reconnect loop". The
+correct HA pattern for a battery-powered active-GATT device is
+**advertisement-triggered on-demand connection**.
 
-1. **Pass `hass` into `GoCubeConnection`** so it can use HA Bluetooth APIs
-2. **Store device address** separately from `BLEDevice` (Bug 2)
-3. **Remove `_find_device` / raw `BleakScanner`** (Bug 7)
-4. **Use `async_ble_device_from_address`** to get fresh device on connect (Bug 3, 10)
-5. **Register disconnect callback** on `BleakClient` (Bug 1)
-6. **Raise `ConfigEntryNotReady`** when cube unavailable at startup (Bug 12)
-7. **Register `async_track_unavailable`** to detect cube going to sleep
-8. **Register `async_register_callback`** to detect cube waking up
+### Current (broken)
 
-### Phase 2: Task management fixes (Bugs 4, 5, 6)
+```
+HA starts → scan for device → connect → hold connection open forever
+  → device sleeps → ??? (disconnect callback never registered)
+  → device wakes → ??? (no mechanism to detect this)
+```
 
-1. **Track all background tasks** in a set, cancel on unload (Bug 4)
-2. **Use `hass.loop.call_soon_threadsafe`** in notification handler (Bug 5)
-3. **Serialize reconnect** — single `_reconnect_task`, cancel-before-start (Bug 6)
+### Target (Yale BLE pattern)
 
-### Phase 3: Entity availability fixes (Bugs 8, 9, 11)
+```
+HA starts → register advertisement callback → wait
+  → cube wakes → HA scanner sees advertisement → callback fires
+  → get fresh BLEDevice → connect → start_notify → receive data
+  → cube sleeps → async_track_unavailable fires → mark assumed_state
+  → entities stay available with last known values
+```
 
-1. **Expose `is_connected` property** on connection, remove private access (Bug 8)
-2. **Don't reset parser on disconnect** — preserve last known state (Bug 11)
-3. **Change entity availability model** — always available once seen,
-   use `assumed_state` when disconnected (Bug 9)
+### Key HA Bluetooth APIs to use
 
-### Phase 4: Minor fixes (Bug 13)
+```python
+from homeassistant.components.bluetooth import (
+    async_ble_device_from_address,    # get fresh BLEDevice by address
+    async_register_callback,          # detect cube waking up (advertisement seen)
+    async_track_unavailable,          # detect cube going to sleep (no advertisement)
+)
+```
 
-1. **Fix auto-reconnect switch** — toggle flag, don't disconnect (Bug 13)
+### Connection lifecycle in `__init__.py`
+
+```python
+async def async_setup_entry(hass, entry):
+    address = entry.data["address"]
+    connection = GoCubeConnection(hass, address)
+
+    # Try to connect now (may fail if cube is asleep — that's OK)
+    device = async_ble_device_from_address(hass, address, connectable=True)
+    if device:
+        await connection.connect(device)
+
+    # Register for advertisement callbacks (cube waking up)
+    entry.async_on_unload(
+        async_register_callback(
+            hass, connection.handle_advertisement,
+            BluetoothCallbackMatcher(address=address),
+        )
+    )
+
+    # Register for unavailability tracking (cube going to sleep)
+    entry.async_on_unload(
+        async_track_unavailable(
+            hass, connection.handle_unavailable, address, connectable=True,
+        )
+    )
+
+    # Set up platforms — entities created even if cube is asleep
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"connection": connection}
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
+```
+
+### Sleepy device entity model
+
+All entities should follow the Oral-B pattern:
+
+```python
+@property
+def available(self) -> bool:
+    return self._has_been_seen  # True once we've received any data
+
+@property
+def assumed_state(self) -> bool:
+    return not self.connection.is_connected  # stale data indicator
+
+@property
+def native_value(self):
+    return self._last_known_value  # never return None just because disconnected
+```
+
+---
+
+# Part 3: Library Separation
+
+## Current structure (conceptually correct, needs cleanup)
+
+```
+custom_components/gocube/
+├── gocube_ble/          ← self-contained library package
+│   ├── ble.py           ← clean public API with __all__
+│   ├── connection.py    ← BLE connection management
+│   ├── const.py         ← protocol constants
+│   ├── models.py        ← data models
+│   └── parser.py        ← message parsing
+├── __init__.py          ← HA integration
+├── sensor.py
+└── ...
+```
+
+## What needs to change
+
+### Separate concerns into three layers
+
+| Layer | Responsibility | Where it lives |
+|---|---|---|
+| **Protocol** | Constants, message parsing, frame validation | `gocube-ble` PyPI package |
+| **Connection** | Thin Bleak wrapper: connect, send, notify | `gocube-ble` PyPI package |
+| **Policy** | Reconnect, debouncing, retry, HA lifecycle | HA integration (`__init__.py`) |
+
+### Currently mixed in `connection.py`
+
+These belong in the **HA integration**, not the library:
+- `_auto_reconnect()` — reconnect policy
+- `_send_debounced_state_update()` — debounce policy
+- `_should_auto_reconnect` — HA-specific flag
+- `enable_auto_reconnect()` — HA-specific method
+- `_find_device()` — scanner policy (should use HA Bluetooth APIs)
+
+### Target library API
+
+```python
+# gocube-ble PyPI package — thin, no HA dependencies
+class GoCubeConnection:
+    async def connect(self, device: BLEDevice) -> None
+    async def disconnect(self) -> None
+    async def send_command(self, command: str) -> None
+    def register_callback(self, callback) -> Callable
+    @property
+    def is_connected(self) -> bool
+    @property
+    def data(self) -> GoCubeData
+```
+
+No scanning, no reconnect, no debouncing — the HA integration owns all of that.
+
+### Target structure
+
+```
+# PyPI package: gocube-ble
+gocube_ble/
+├── __init__.py          ← public API
+├── const.py             ← protocol constants + commands
+├── models.py            ← GoCubeData, orientation quaternion, stats
+├── parser.py            ← message framing, validation, parsing
+├── connection.py        ← thin Bleak wrapper: connect, send, notify
+└── renderer.py          ← isometric cube renderer (for camera entity)
+
+# HA integration: custom_components/gocube
+custom_components/gocube/
+├── __init__.py          ← coordinator, reconnect policy, BLE lifecycle
+├── camera.py            ← ImageEntity using renderer
+├── sensor.py
+├── binary_sensor.py
+├── event.py             ← rotation + orientation events
+├── light.py
+├── button.py
+├── switch.py
+├── config_flow.py
+└── manifest.json        ← requirements: ["gocube-ble>=2.0.0"]
+```
+
+---
+
+# Part 4: Feature-Complete BLE Protocol
+
+## Currently implemented
+
+| Message | Type | Status |
+|---|---|---|
+| `MsgRotation` | `0x01` | Implemented — fires rotation events |
+| `MsgState` | `0x02` | Implemented — parses 54 sticker colors, face solved state |
+| `MsgOrientation` | `0x03` | **Stub** — parsed but discarded (`parser.py:66`) |
+| `MsgBattery` | `0x05` | Implemented — battery percentage |
+| `MsgStats` | `0x07` | **Not implemented** — constant defined but not parsed |
+| `MsgCubeType` | `0x08` | **Not implemented** — constant defined but not parsed |
+
+## Commands currently implemented
+
+| Command | Byte | Status |
+|---|---|---|
+| `GetBattery` | `0x32` | Used |
+| `GetState` | `0x33` | Used |
+| `Reboot` | `0x34` | Used (button entity) |
+| `SetSolvedState` | `0x35` | Defined, not exposed |
+| `DisableOrientation` | `0x37` | Used on connect |
+| `EnableOrientation` | `0x38` | Defined, not used |
+| `GetStats` | `0x39` | Defined, not used |
+| `GetCubeType` | `0x56` | Defined, not used |
+| LED commands | `0x41-0x44` | Used (light entity) |
+
+## What needs to be added
+
+### 1. Orientation quaternion parsing (`MsgOrientation` 0x03)
+
+Currently a no-op in `parser.py:66`:
+```python
+def parse_orientation_message(self, data: bytearray) -> None:
+    if len(data) >= 5:
+        _LOGGER.debug("Received orientation update")  # ← does nothing
+```
+
+Needs to parse quaternion (x, y, z, w) from the message payload and store it in
+`GoCubeData`. The GoCube app uses this at 15fps to rotate the 3D cube in real-time.
+
+Add to `models.py`:
+```python
+@dataclass
+class Orientation:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    w: float = 1.0
+
+@dataclass
+class GoCubeData:
+    # ... existing fields ...
+    orientation: Orientation | None = None
+```
+
+### 2. Stats message parsing (`MsgStats` 0x07)
+
+Parse session statistics from the cube: solve count, total time, etc.
+Expose as diagnostic sensor entities.
+
+### 3. Cube type detection (`MsgCubeType` 0x08)
+
+Parse the cube model/hardware version. Store in `GoCubeData.cube_type`.
+Use in device info for the HA device registry.
+
+### 4. Multi-rotation support
+
+The current rotation handler only reads a single rotation from byte 3:
+```python
+face_rotation = data[3]
+```
+
+Some protocol messages contain multiple sequential rotations in a single notification.
+Parser should handle variable-length rotation payloads.
+
+### 5. Message framing and validation
+
+Currently no validation of message framing. The protocol uses:
+- Prefix: `0x2A` (`MSG_PREFIX` — defined but not checked)
+- Suffix: `0x0D 0x0A` (CR LF — `MSG_SUFFIX` — defined but not checked)
+
+Parser should validate frame boundaries and checksums before processing.
+
+---
+
+# Part 5: Cube Visualization
+
+## Tier 1: Static Isometric ImageEntity (quick win)
+
+Generate a SVG or PNG showing 3 visible faces of the cube from a fixed isometric
+angle. Updates on every move via `MsgState`.
+
+**What's needed:**
+- `renderer.py` in the gocube-ble library — takes 54 sticker colors, produces image
+- `camera.py` in the HA integration — `ImageEntity` that serves the rendered image
+- No orientation data needed — fixed camera angle
+- No frontend/JavaScript work — pure backend Python
+
+**Data already available:** The 54 sticker colors from `MsgState` (already parsed
+and stored in `GoCubeData.face_states`). Currently stored as per-face solved/unsolved
+booleans — needs to be extended to store actual per-sticker colors for rendering.
+
+### Changes to models.py
+
+```python
+@dataclass
+class GoCubeData:
+    battery_level: int | None = None
+    is_solved: bool = False
+    face_states: dict[str, bool] = None          # existing: per-face solved
+    face_colors: list[list[int]] = None           # new: 6 faces x 9 stickers
+    orientation: Orientation | None = None         # new: quaternion
+    # ...
+```
+
+### Renderer approach
+
+Isometric projection of a Rubik's cube showing top, right, and front faces (3 of 6).
+Each face is a 3x3 grid of colored squares with slight perspective transform.
+
+Options:
+- **SVG** — scalable, clean, small file size, easy to generate
+- **Pillow/PNG** — raster, more control over anti-aliasing
+
+SVG is the better choice for HA dashboards (scales to any card size).
+
+## Tier 2: Live 3D Rotating Cube (custom Lovelace card)
+
+A custom frontend card using three.js / WebGL that renders a textured 3D cube
+rotating in real-time based on orientation data from the cube.
+
+**Architecture:**
+```
+GoCube (BLE)
+  → MsgOrientation @ 15fps → HA event entity
+  → MsgState on moves      → HA sensor entity
+      ↓
+Custom Lovelace Card (three.js)
+  → subscribes to orientation events via WebSocket
+  → subscribes to state entity for face colors
+  → renders textured 3D cube, rotating in real-time
+```
+
+**Challenges:**
+- HA's entity update loop isn't designed for 15fps streaming
+- Options: event entity (fires events, card subscribes via WebSocket), or expose a
+  WebSocket API directly, or throttle to ~5fps
+- This is a separate frontend project (JavaScript/TypeScript, npm build pipeline)
+- Would need HACS frontend distribution
+
+**Effort:** Significant — separate JS project. The isometric ImageEntity (Tier 1)
+is the prerequisite and quick win.
+
+---
+
+# Part 6: Implementation Order
+
+## Phase 1: Fix critical bugs + adopt Yale BLE pattern
+
+**Goal:** Working, reliable BLE connection for a battery-powered device.
+
+1. Pass `hass` into `GoCubeConnection` (enables HA Bluetooth APIs)
+2. Store device address separately, never clear it (Bug 2)
+3. Remove `_find_device` / raw `BleakScanner` (Bug 7)
+4. Use `async_ble_device_from_address` for fresh device on connect (Bug 3, 10)
+5. Register disconnect callback on `BleakClient` (Bug 1)
+6. Raise `ConfigEntryNotReady` when cube unavailable at startup (Bug 12)
+7. Register `async_track_unavailable` for sleep detection
+8. Register `async_register_callback` for wake detection
+9. Don't reset parser on disconnect (Bug 11)
+
+## Phase 2: Fix task management + entity UX
+
+**Goal:** No more leaked tasks, races, or deadlocks. Clean dashboard UX.
+
+1. Track all background tasks in a set, cancel on unload (Bug 4)
+2. Use `hass.loop.call_soon_threadsafe` in notification handler (Bug 5)
+3. Serialize reconnect — single task, cancel-before-start (Bug 6)
+4. Expose `is_connected` property, remove private attribute access (Bug 8)
+5. Sleepy device availability model — always available, `assumed_state` (Bug 9)
+6. Fix auto-reconnect switch — toggle flag, don't disconnect (Bug 13)
+
+## Phase 3: Library separation
+
+**Goal:** Clean PyPI-publishable library with no HA dependencies.
+
+1. Move reconnect/retry/debounce policy out of `gocube_ble/connection.py` into `__init__.py`
+2. Keep `gocube_ble` as thin Bleak wrapper + protocol parser
+3. Add proper message framing/validation to parser
+4. Set up PyPI package structure and publish
+5. Update `manifest.json` to reference `gocube-ble` from PyPI
+
+## Phase 4: Feature-complete BLE protocol
+
+**Goal:** Parse and expose all GoCube protocol messages.
+
+1. Implement orientation quaternion parsing (`MsgOrientation` 0x03)
+2. Implement stats message parsing (`MsgStats` 0x07)
+3. Implement cube type detection (`MsgCubeType` 0x08)
+4. Handle multi-rotation payloads
+5. Add frame validation (prefix/suffix/checksum)
+6. Extend `GoCubeData` model with orientation, stats, per-sticker colors
+7. Add new sensor/diagnostic entities for stats and cube type
+
+## Phase 5: Cube visualization — Tier 1 (isometric image)
+
+**Goal:** Visual cube state on the HA dashboard.
+
+1. Extend parser to store per-sticker colors (not just per-face solved boolean)
+2. Implement `renderer.py` — isometric SVG generator
+3. Implement `camera.py` — `ImageEntity` serving rendered cube
+4. Updates on every `MsgState`
+
+## Phase 6: Cube visualization — Tier 2 (live 3D card)
+
+**Goal:** App-like real-time 3D cube in the browser.
+
+1. Enable orientation streaming (`EnableOrientation` command)
+2. Expose orientation as event entity (or WebSocket API)
+3. Build custom Lovelace card (three.js, TypeScript)
+4. Subscribe to orientation events + state via WebSocket
+5. Render textured 3D cube rotating in real-time
+6. Package for HACS frontend distribution
