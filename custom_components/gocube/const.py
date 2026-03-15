@@ -4,6 +4,6 @@ from __future__ import annotations
 
 DOMAIN = "gocube"
 
-# Default values
-DEFAULT_NAME = "GoCube"
-DEFAULT_SCAN_INTERVAL = 60
+# Dispatcher signals
+SIGNAL_STATE_UPDATE = f"{DOMAIN}_state_update"
+SIGNAL_MOVEMENT = f"{DOMAIN}_movement"

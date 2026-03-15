@@ -3,22 +3,18 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from homeassistant.components.event import (
-    EventDeviceClass,
-    EventEntity,
-)
+from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_ADDRESS
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .gocube_ble.ble import GoCubeConnection
+from .const import DOMAIN, SIGNAL_MOVEMENT
 
 _LOGGER = logging.getLogger(__name__)
 
-# Define all possible rotation events
 ROTATION_EVENTS = [
     "blue_clockwise",
     "blue_counterclockwise",
@@ -41,40 +37,44 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up GoCube event based on a config entry."""
-    connection = hass.data[DOMAIN][entry.entry_id]["connection"]
-    async_add_entities([GoCubeRotationEvent(connection, entry)])
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([GoCubeRotationEvent(coordinator, entry)])
 
 
 class GoCubeRotationEvent(EventEntity):
-    """Defines a GoCube rotation event."""
+    """GoCube rotation event entity."""
 
     _attr_has_entity_name = True
     _attr_name = "Rotation"
     _attr_device_class = EventDeviceClass.MOTION
     _attr_event_types = ROTATION_EVENTS
 
-    def __init__(self, connection: GoCubeConnection, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
         """Initialize the event entity."""
-        self.connection = connection
-        self._attr_unique_id = f"{entry.data['address']}_rotation"
+        self.coordinator = coordinator
+        address = entry.data[CONF_ADDRESS]
+        self._attr_unique_id = f"{address}_rotation"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.data["address"])},
+            "identifiers": {(DOMAIN, address)},
             "name": entry.title,
             "model": "GoCube",
             "manufacturer": "GoCube",
         }
+        self._address = address
 
     async def async_added_to_hass(self) -> None:
-        """Register callbacks."""
-        self.connection.add_movement_callback(self._handle_movement)
+        """Register movement dispatcher listener."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{SIGNAL_MOVEMENT}_{self._address}",
+                self._handle_movement,
+            )
+        )
 
+    @callback
     def _handle_movement(self, movement: str) -> None:
         """Handle movement events from the cube."""
-        # Convert "Blue Clockwise" to "blue_clockwise"
         event_type = movement.lower().replace(" ", "_")
         self._trigger_event(event_type)
         self.async_write_ha_state()
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Unregister callbacks."""
-        self.connection.remove_movement_callback(self._handle_movement)

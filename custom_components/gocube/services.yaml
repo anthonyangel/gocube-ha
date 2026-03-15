@@ -1,0 +1,36 @@
+save_pattern:
+  name: Save pattern
+  description: Save the current cube state as a named pattern.
+  target:
+    device:
+      integration: gocube
+  fields:
+    name:
+      name: Name
+      description: A name for this pattern (e.g. "Movie Time").
+      required: true
+      example: "Movie Time"
+      selector:
+        text:
+
+delete_pattern:
+  name: Delete pattern
+  description: Delete a saved pattern by name.
+  target:
+    device:
+      integration: gocube
+  fields:
+    name:
+      name: Name
+      description: The name of the pattern to delete.
+      required: true
+      example: "Movie Time"
+      selector:
+        text:
+
+list_patterns:
+  name: List patterns
+  description: Log all saved and built-in patterns to the Home Assistant log.
+  target:
+    device:
+      integration: gocube

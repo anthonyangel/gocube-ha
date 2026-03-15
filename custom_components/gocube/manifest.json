@@ -9,7 +9,7 @@
     "codeowners": [],
     "config_flow": true,
     "dependencies": [
-        "bluetooth_adapters"
+        "bluetooth"
     ],
     "documentation": "https://github.com/anthonyangel/gocube-ha",
     "integration_type": "device",
@@ -21,8 +21,7 @@
     ],
     "quality_scale": "custom",
     "requirements": [
-        "bleak>=0.21.0",
-        "bleak-retry-connector>=0.3.0"
+        "bleak>=0.21.0"
     ],
-    "version": "1.1.0"
+    "version": "2.0.0"
 }
