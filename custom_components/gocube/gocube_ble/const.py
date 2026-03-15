@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-# Bluetooth UUIDs
+# Bluetooth UUIDs (Nordic UART Service)
 PRIMARY_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 RX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 TX_CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
-# Message constants
+# Message framing
 MSG_PREFIX = 0x2A
 MSG_SUFFIX = bytearray([0x0D, 0x0A])  # CR, LF
 
@@ -34,6 +34,14 @@ CONFIGURATION_COMMANDS = {
     "LedToggleAnimation": bytearray([0x42]),
     "LedFlashSlow": bytearray([0x43]),
     "LedToggle": bytearray([0x44]),
+    # LED Brightness Presets (0x45=brightest → 0x4B=off)
+    "LedBrightness6": bytearray([0x45]),
+    "LedBrightness5": bytearray([0x46]),
+    "LedBrightness4": bytearray([0x47]),
+    "LedBrightness3": bytearray([0x48]),
+    "LedBrightness2": bytearray([0x49]),
+    "LedBrightness1": bytearray([0x4A]),
+    "LedBrightnessOff": bytearray([0x4B]),
 }
 
 # Face rotation mapping
@@ -52,7 +60,7 @@ FACE_ROTATION_MAP = {
     0x0B: "Orange Counterclockwise",
 }
 
-# Color mapping
+# Color index to name mapping
 COLOR_HEX_LOOKUP = {
     0x00: "Blue",
     0x01: "Green",
@@ -61,3 +69,16 @@ COLOR_HEX_LOOKUP = {
     0x04: "Red",
     0x05: "Orange",
 }
+
+# Color name to RGB hex for rendering
+COLOR_RGB = {
+    "Blue": "#0051BA",
+    "Green": "#009E60",
+    "White": "#FFFFFF",
+    "Yellow": "#FFD500",
+    "Red": "#C41E3A",
+    "Orange": "#FF5800",
+}
+
+# Standard face ordering for isometric rendering (top, right, left)
+ISOMETRIC_FACES = ("White", "Blue", "Red")

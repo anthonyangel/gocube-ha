@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -11,12 +10,12 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
+from homeassistant.const import CONF_ADDRESS
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .gocube_ble.ble import GoCubeConnection
+from .const import DOMAIN, SIGNAL_STATE_UPDATE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,49 +24,42 @@ BINARY_SENSOR_TYPES: dict[str, BinarySensorEntityDescription] = {
         key="cube_solved",
         name="Solved",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
         has_entity_name=True,
     ),
     "blue_face": BinarySensorEntityDescription(
         key="blue_face",
-        name="Blue Face",
+        name="Face: Blue",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
         has_entity_name=True,
     ),
     "green_face": BinarySensorEntityDescription(
         key="green_face",
-        name="Green Face",
+        name="Face: Green",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
         has_entity_name=True,
     ),
     "white_face": BinarySensorEntityDescription(
         key="white_face",
-        name="White Face",
+        name="Face: White",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
         has_entity_name=True,
     ),
     "yellow_face": BinarySensorEntityDescription(
         key="yellow_face",
-        name="Yellow Face",
+        name="Face: Yellow",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
         has_entity_name=True,
     ),
     "red_face": BinarySensorEntityDescription(
         key="red_face",
-        name="Red Face",
+        name="Face: Red",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
         has_entity_name=True,
     ),
     "orange_face": BinarySensorEntityDescription(
         key="orange_face",
-        name="Orange Face",
+        name="Face: Orange",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
         has_entity_name=True,
     ),
 }
@@ -79,67 +71,64 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up GoCube binary sensors."""
-    connection = hass.data[DOMAIN][entry.entry_id]["connection"]
+    coordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
-        GoCubeBinarySensor(connection, entry, description)
+        GoCubeBinarySensor(coordinator, entry, description)
         for description in BINARY_SENSOR_TYPES.values()
     )
 
 
 class GoCubeBinarySensor(BinarySensorEntity):
-    """Representation of a GoCube binary sensor."""
+    """GoCube binary sensor entity."""
 
     _attr_has_entity_name = True
     _attr_should_poll = False
 
-    def __init__(
-        self,
-        connection: GoCubeConnection,
-        entry: ConfigEntry,
-        description: BinarySensorEntityDescription,
-    ) -> None:
+    def __init__(self, coordinator, entry: ConfigEntry, description: BinarySensorEntityDescription) -> None:
         """Initialize the binary sensor."""
-        self.connection = connection
+        self.coordinator = coordinator
         self.entity_description = description
-        self._attr_unique_id = f"{entry.data['address']}_{description.key}"
+        address = entry.data[CONF_ADDRESS]
+        self._attr_unique_id = f"{address}_{description.key}"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.data["address"])},
+            "identifiers": {(DOMAIN, address)},
             "name": entry.title,
             "model": "GoCube",
             "manufacturer": "GoCube",
         }
-        self._unsubscribe = None
+        self._address = address
 
     async def async_added_to_hass(self) -> None:
-        """Run when entity about to be added to hass."""
-        self._unsubscribe = self.connection.register_callback(self._handle_state_change)
+        """Register dispatcher listener."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{SIGNAL_STATE_UPDATE}_{self._address}",
+                self._handle_update,
+            )
+        )
 
-    def _handle_state_change(self) -> None:
-        """Handle state changes."""
+    @callback
+    def _handle_update(self) -> None:
+        """Handle state update."""
         self.async_write_ha_state()
 
     @property
-    def is_on(self) -> bool:
-        """Return if the face is solved."""
-        data = self.connection.data
-        if self.entity_description.key == "cube_solved":
-            return not data.is_solved  # Problem when not solved
-
-        # Extract color from the key (e.g., "blue_face" -> "Blue")
-        color = self.entity_description.key.split("_")[0].capitalize()
-        # Return True (problem) when face is not solved
-        return not data.face_states.get(color, False)
+    def available(self) -> bool:
+        """Return True once we've received any data from the cube."""
+        return self.coordinator.has_been_seen
 
     @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return (
-            self.connection._is_connected
-            and self.connection._client is not None
-            and self.connection._client.is_connected
-        )
+    def assumed_state(self) -> bool:
+        """Return True when disconnected (values are cached)."""
+        return not self.coordinator.is_connected
 
-    async def async_will_remove_from_hass(self) -> None:
-        """Run when entity will be removed from hass."""
-        if self._unsubscribe:
-            self._unsubscribe()
+    @property
+    def is_on(self) -> bool:
+        """Return True when face is NOT solved (problem sensor)."""
+        data = self.coordinator.data
+        if self.entity_description.key == "cube_solved":
+            return not data.is_solved
+
+        color = self.entity_description.key.split("_")[0].capitalize()
+        return not data.face_states.get(color, False)
