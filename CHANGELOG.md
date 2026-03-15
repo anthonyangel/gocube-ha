@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/anthonyangel/gocube-ha/compare/v1.1.0...v2.0.0) (2026-03-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* GoCubeConnection API changed — callbacks are now constructor params, data access via .data property, connect() takes BLEDevice.
+
+### Features
+
+* full integration rewrite v2.0.0 ([#13](https://github.com/anthonyangel/gocube-ha/issues/13)) ([9b95f9f](https://github.com/anthonyangel/gocube-ha/commit/9b95f9ffe4321fb734a6d556f4dbff36542552af))
+
 ## [1.1.0](https://github.com/anthonyangel/gocube-ha/compare/v1.0.0...v1.1.0) (2025-03-31)
 
 
