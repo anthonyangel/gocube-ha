@@ -1,7 +1,5 @@
 """GoCube Bluetooth library."""
 
-from __future__ import annotations
-
 from .connection import GoCubeConnection
 from .const import (
     COLOR_HEX_LOOKUP,
@@ -13,7 +11,7 @@ from .const import (
     RX_CHARACTERISTIC_UUID,
     TX_CHARACTERISTIC_UUID,
 )
-from .models import CubeStats, GoCubeData, Orientation
+from .models import KNOWN_PATTERNS, CubeStats, GoCubeData, Orientation
 from .parser import GoCubeDataParser
 from .renderer import render_cube_svg
 
@@ -24,6 +22,7 @@ __all__ = [
     "CubeStats",
     "FACE_ROTATION_MAP",
     "GoCubeConnection",
+    "KNOWN_PATTERNS",
     "GoCubeData",
     "GoCubeDataParser",
     "ISOMETRIC_FACES",
